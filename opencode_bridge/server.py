@@ -22,6 +22,17 @@ from .schemas import ChatCompletionRequest
 # 流式输出时每个 SSE 分片的字符数
 STREAM_CHUNK_SIZE = 32
 
+# 客户端常把多个模型名塞进一个 model 字段，常见的分隔符
+MODEL_SEPARATORS: tuple[str, ...] = ("、", "，", ",", "；", ";", "\n")
+
+
+def split_model_ids(model: str) -> list[str]:
+    """把可能被塞了多个模型名的 model 字段拆开。"""
+    parts = [model]
+    for sep in MODEL_SEPARATORS:
+        parts = [piece for chunk in parts for piece in chunk.split(sep)]
+    return [piece.strip() for piece in parts if piece.strip()]
+
 
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
     """构造应用，允许注入自定义配置（测试时很方便）。"""
@@ -128,6 +139,19 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         authorization: Optional[str] = Header(None),
     ):
         require_auth(authorization)
+
+        # `opencode run --model` 只认一个模型名，多填了会得到一句莫名其妙的
+        # "Model unavailable: a、b、c"，这里提前拦下来给出人话提示。
+        model_ids = split_model_ids(req.model)
+        if len(model_ids) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"model 字段只能填一个模型 ID，你传了 {len(model_ids)} 个："
+                    f"{req.model!r}；填一个就够了，比如 {model_ids[0]!r}。"
+                    "需要多个模型请在客户端里分别添加多条配置。"
+                ),
+            )
 
         prompt = format_messages_with_tools_to_prompt(
             req.messages, req.tools, req.tool_choice

@@ -5,7 +5,7 @@
 把本地 `opencode` CLI 包装成一个**标准 OpenAI 兼容 API**：`/v1/models`、`/v1/chat/completions`，
 还带**原生 `tools` / `tool_calls` 支持**。Cline、Roo Code、Cursor、Dify、LangChain、OpenClaw
 这些重度 Agent 直接填个 Base URL 就能白嫖 OpenCode 的免费模型（`opencode/big-pickle`、
-`opencode/gpt-5-nano`、`opencode/minimax-m2.5-free` 之类）。
+`opencode/glm-5.3-flash-free`、`opencode/deepseek-v4.1-flash-free` 之类，具体以 `/v1/models` 为准）。
 
 本鱼把原指南里那一整坨 500 行的单文件，拆成了**十个左右的小模块**，每个只干一件事。
 不是本鱼爱折腾，是单文件真的会把鱼看晕。🫧
@@ -244,9 +244,11 @@ uv run uvicorn opencode_bridge.server:app --host 127.0.0.1 --port 8083 --reload
 | API Provider | `OpenAI Compatible` |
 | Base URL | `http://127.0.0.1:8083/v1` |
 | API Key | 随便非空，例如 `sk-opencode-free`（除非你设了 `BRIDGE_API_KEY`） |
-| Model ID | `opencode/big-pickle`、`opencode/minimax-m2.5-free`、`opencode/gpt-5-nano` …… |
+| Model ID | **只填一个**，例如 `opencode/big-pickle`（**别把多个模型名用顿号连起来填**，那样会被当成一个模型名，直接报 `Model unavailable`） |
 
 模型列表可以用 `opencode models opencode` 看最新的，或者直接请求网关的 `/v1/models`。
+> 注意：OpenCode 的免费模型名字经常变（`opencode/gpt-5-nano`、`opencode/minimax-m2.5-free`
+> 这类老名字会失效）。以 `/v1/models` 返回的为准，一次只填一个。
 
 ### 5. 用 curl 验证 Function Calling
 

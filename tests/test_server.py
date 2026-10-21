@@ -170,3 +170,52 @@ def test_missing_cli_returns_500(tmp_path):
     )
     assert response.status_code == 500
     assert "无法启动 opencode CLI" in response.json()["detail"]
+
+
+def test_multiple_model_ids_rejected(fake_cli, tmp_path):
+    """把三个模型名用顿号塞进 model 字段时，应该给出人话提示而不是 CLI 原始报错。"""
+    script, _ = fake_cli
+    client = TestClient(create_app(make_settings(tmp_path, str(script))))
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "opencode/big-pickle、opencode/minimax-m2.5-free、opencode/gpt-5-nano",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "只能填一个模型 ID" in detail
+    assert "3 个" in detail
+
+
+def test_split_model_ids():
+    from opencode_bridge.server import split_model_ids
+
+    assert split_model_ids("opencode/big-pickle") == ["opencode/big-pickle"]
+    assert split_model_ids("a、b") == ["a", "b"]
+    assert split_model_ids("a, b") == ["a", "b"]
+    assert split_model_ids(" a ；b\nc ") == ["a", "b", "c"]
+
+
+def test_error_detail_strips_ansi(tmp_path):
+    """opencode 的彩色错误码不应该原样漏进 JSON。"""
+    script = tmp_path / "fake_opencode"
+    script.write_text(
+        "#!/bin/sh\n"
+        "printf '\\033[91mError: \\033[0mmodel unavailable\\n' >&2\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    client = TestClient(create_app(make_settings(tmp_path, str(script))))
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "opencode/nope", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert "\x1b" not in detail
+    assert "model unavailable" in detail

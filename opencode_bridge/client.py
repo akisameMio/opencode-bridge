@@ -7,9 +7,18 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from typing import List
 
 from .config import FALLBACK_MODELS, Settings
+
+# opencode CLI 会用 ANSI 颜色码把错误刷得花花绿绿，直接回给客户端会变成一堆 \u001b
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def strip_ansi(text: str) -> str:
+    """去掉终端颜色/样式转义序列，让错误信息在 JSON 里可读。"""
+    return _ANSI_RE.sub("", text)
 
 
 class OpenCodeError(RuntimeError):
@@ -72,9 +81,8 @@ class OpenCodeClient:
             ) from exc
 
         if returncode != 0:
-            raise OpenCodeError(
-                f"OpenCode CLI 执行失败: {stderr.strip() or stdout.strip()}"
-            )
+            detail = strip_ansi(stderr.strip() or stdout.strip())
+            raise OpenCodeError(f"OpenCode CLI 执行失败: {detail}")
 
         return stdout
 

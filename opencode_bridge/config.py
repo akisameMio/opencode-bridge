@@ -12,12 +12,14 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 # opencode models 拉取失败时使用的兜底免费模型列表
+# 注意：这只是"占位"清单，OpenCode 的免费模型变动很快（旧名字会变成
+# Model unavailable），真实可用的以 `opencode models` / `/v1/models` 为准。
 FALLBACK_MODELS: tuple[str, ...] = (
     "opencode/big-pickle",
-    "opencode/gpt-5-nano",
-    "opencode/minimax-m2.5-free",
-    "opencode/nemotron-3-super-free",
-    "opencode/kimi-k2.5-free",
+    "opencode/glm-5.3-flash-free",
+    "opencode/minimax-m3.1-flash-free",
+    "opencode/deepseek-v4.1-flash-free",
+    "opencode/nemotron-3-ultra-free",
 )
 
 
