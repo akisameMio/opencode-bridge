@@ -10,6 +10,9 @@
 本鱼把原指南里那一整坨 500 行的单文件，拆成了**十个左右的小模块**，每个只干一件事。
 不是本鱼爱折腾，是单文件真的会把鱼看晕。🫧
 
+现在还能**整条鱼塞进 Docker**，一条 `docker compose up -d --build` 就端上桌，
+不用在宿主装 Python、uv、opencode 三件套。
+
 ---
 
 ## 🐟 先看这里：目录结构
@@ -20,6 +23,9 @@ opencode-bridge/
 ├── pyproject.toml               # 项目元数据 + 依赖（Python >= 3.13）
 ├── .python-version              # 固定 3.13，uv 会照这个找解释器
 ├── .gitignore
+├── .dockerignore                # 别把 .venv / .git 塞进构建上下文
+├── Dockerfile                   # 容器镜像：Python + uv + OpenCode 1.x
+├── docker-compose.yml           # 一条命令起网关，端口只绑 127.0.0.1
 ├── README.md                    # 你正在看的这条鱼
 ├── opencode_bridge/             # 真正的包
 │   ├── __init__.py              # 版本号
@@ -55,8 +61,8 @@ opencode-bridge/
 | `OPENCODE_ATTACH_URL` | 空 | 填 `http://127.0.0.1:4096` 可挂到常驻的 `opencode serve` 上，少一次冷启动 |
 | `BRIDGE_API_KEY` | 空 | 留空 = 不校验；填了就要求 `Authorization: Bearer <key>` |
 | `DEFAULT_MODEL` | `opencode/big-pickle` | 客户端没传 `model` 时的默认值 |
-| `BRIDGE_HOST` | `127.0.0.1` | 监听地址 |
-| `BRIDGE_PORT` | `8083` | 监听端口 |
+| `BRIDGE_HOST` | `127.0.0.1` | 监听地址（容器里是 `0.0.0.0`） |
+| `BRIDGE_PORT` | `8083` | 监听端口（容器里固定 `8083`） |
 | `BRIDGE_WORK_DIR` | 系统临时目录下的 `opencode_bridge_workspace` | opencode 的工作目录，防止它在你的项目里乱翻 |
 | `OPENCODE_TIMEOUT` | `0`（不限时） | 单次 `opencode run` 的超时秒数 |
 
@@ -67,6 +73,7 @@ opencode-bridge/
 
 - **`DISABLE_TOOLS_NOTICE`**：告诉 opencode「你只是个会说话会写代码的模型，
   别自己偷偷跑 shell、读文件」。不然它会跟外部 Agent 抢活干，工作区直接炸。
+  本鱼实测：不戴这个紧箍咒，它真的会写个脚本再 `python3` 跑一遍，贼离谱。
 - **`TOOL_CALL_INSTRUCTION`**：约定工具调用必须输出
   ```` ```json {"tool_calls":[...]} ``` ```` 这个格式，网关才能拦下来翻译成标准
   `tool_calls`；顺便警告它「别编造工具结果，等下一轮的 `[TOOL_RESPONSE]`」。
@@ -169,6 +176,8 @@ FastAPI 的事件循环堵成死鱼。
 - `python -m opencode_bridge`：走 `__main__.main()`，读 `Settings` 后 `uvicorn.run`；
 - `python main.py`：根目录的便捷壳子，逻辑同上。
 
+容器里的 `CMD` 也是 `python -m opencode_bridge`，所以本地和容器走的是同一条路。
+
 ### 10. `tests/` — 不烧 token 的体检
 
 - `test_parser.py`：纯文本、JSONL 事件、单/多工具调用、裸 JSON；
@@ -178,15 +187,35 @@ FastAPI 的事件循环堵成死鱼。
 
 跑测试不会调用真模型，放心，不花你一分钱（也不花本鱼的鱼干）。
 
+### 11. 容器三件套 — `Dockerfile` / `docker-compose.yml` / `.dockerignore`
+
+这三个不是 Python 模块，是让整条鱼能装进盒子的包装纸：
+
+- **`Dockerfile`**：
+  - 基础镜像 `python:3.13-slim`；
+  - 用 `uv sync --frozen` 按 `uv.lock` 装依赖，跟本地 `.venv` 同一份锁文件；
+  - 装 **OpenCode 1.x** 到 `/home/bridge/.opencode/bin`（不是 2.x，原因见下方 FAQ）；
+  - 建了个 uid `10001` 的非 root 用户 `bridge`，网关和 opencode 都用它跑；
+  - `HEALTHCHECK` 打 `/health`，容器状态在 `docker compose ps` 里一眼可见。
+- **`docker-compose.yml`**：
+  - 端口只绑宿主 `127.0.0.1:8083`，默认不给局域网开门；
+  - 两个命名卷：`opencode-data` 存 auth/session/数据库，`opencode-config` 存配置；
+  - `OPENCODE_TIMEOUT` 默认 `300` 秒，免得某个请求把容器拖到天荒地老；
+  - `init: true`，帮 opencode 收尸（子进程僵尸），不然 PID 1 会堆一堆。
+- **`.dockerignore`**：把 `.venv`、`.git`、`.uv-cache`、测试缓存、`.env` 全挡在构建上下文外，
+  镜像不会莫名其妙胖一圈。
+
 ---
 
-## 🚀 快速开始
+## 🚀 快速开始（本地跑）
 
 ### 0. 前置条件
 
 - Python **3.13**（`uv` 会自己下，不用你手动装）
 - 已安装 `opencode` CLI，并且能正常跑 `opencode models`
 - `uv`（没装的话：`brew install uv` 或 `curl -LsSf https://astral.sh/uv/install.sh | sh`）
+
+> 不想装这些？直接跳到下面的「🐳 Docker 部署」，宿主只要有个 Docker 就行。
 
 ### 1. 创建虚拟环境并安装依赖
 
@@ -235,7 +264,143 @@ uv run uvicorn opencode_bridge.server:app --host 127.0.0.1 --port 8083 --reload
 看到 `启动 OpenCode 完全体桥接网关 (含 Tools 支持)` 就说明活过来了，默认监听
 `http://127.0.0.1:8083`。
 
-### 4. 客户端接入
+---
+
+## 🐳 Docker 部署（推荐给不想配环境的懒鱼）
+
+### 1. 起锅
+
+```bash
+cd "opencode-bridge"
+
+# 构建 + 后台启动
+docker compose up -d --build
+
+# 看它活没活
+docker compose ps
+curl -s http://127.0.0.1:8083/health
+```
+
+第一次构建要下 Python 镜像、uv、OpenCode CLI，慢一点是正常的，
+不是本鱼在偷懒（虽然确实在偷）。
+
+### 2. 验证三条接口
+
+```bash
+# 健康检查
+curl -s http://127.0.0.1:8083/health | python3 -m json.tool
+
+# 模型列表
+curl -s http://127.0.0.1:8083/v1/models | python3 -m json.tool
+
+# 普通聊天
+curl -s http://127.0.0.1:8083/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "opencode/big-pickle",
+    "messages": [{"role": "user", "content": "用一句话说明什么是桥接网关"}],
+    "stream": false
+  }' | python3 -m json.tool
+```
+
+### 3. 登录 opencode（免费额度不够时）
+
+镜像里的 OpenCode 是一个**全新的、干净的**环境，不带你宿主机上的登录状态。
+如果调用时看到：
+
+```text
+Error: Free usage limit reached. Connect a provider or subscribe to OpenCode Go to keep going, or switch models.
+```
+
+那不是网关坏了，是 OpenCode 的免费额度用完了。两条路：
+
+1. **等额度恢复 / 换个免费模型**（把 `DEFAULT_MODEL` 改成 `/v1/models` 里别的名字）；
+2. **在容器里登录你自己的 provider**：
+
+```bash
+docker compose exec bridge opencode auth login
+```
+
+按提示选 provider、打开它给的链接、把授权码粘回去。登录信息存在
+`opencode-data` 卷里，容器重启、重建都不会丢；除非你手贱 `docker compose down -v`。
+
+### 4. 改配置
+
+在 `docker-compose.yml` 旁边建个 `.env`（已被 `.gitignore` 挡住），写：
+
+```dotenv
+# 网关鉴权，留空 = 不校验
+BRIDGE_API_KEY=sk-your-secret
+
+# 默认模型
+DEFAULT_MODEL=opencode/big-pickle
+
+# 单次请求超时（秒），0 = 不限时
+OPENCODE_TIMEOUT=300
+
+# 宿主端口（容器里永远是 8083）
+BRIDGE_HOST_PORT=8083
+```
+
+然后：
+
+```bash
+docker compose up -d
+```
+
+Compose 会自动读 `.env`，不需要 `source`。
+
+### 5. 常用命令
+
+```bash
+# 看日志（排查 500 的第一现场）
+docker compose logs -f bridge
+
+# 改完代码重新构建
+docker compose up -d --build
+
+# 暂停（保留数据卷）
+docker compose stop
+
+# 删除容器和网络（保留数据卷）
+docker compose down
+
+# 连数据卷一起扬了（登录状态、session 全没）
+docker compose down -v
+```
+
+### 6. 端口和安全
+
+默认映射是 `127.0.0.1:8083:8083`，只有本机能访问。
+想让局域网里的另一台机器用，把 `docker-compose.yml` 里的 `ports` 改成：
+
+```yaml
+ports:
+  - "0.0.0.0:8083:8083"
+```
+
+**然后一定要设 `BRIDGE_API_KEY`**，不然隔壁同事能拿你的免费额度跑一整天。
+本鱼可不想替你交这个电费。🐋
+
+### 7. 为什么镜像里是 OpenCode 1.x，不是我宿主上的 2.x？
+
+因为网关和 OpenCode 之间的契约是：
+
+```text
+opencode run --model <model> <prompt>  →  stdout 里是模型回复
+```
+
+OpenCode 2 改成了 managed service，默认还带工具，输出里会混进
+`> build · big-pickle`、工具执行日志之类的装饰，直接喂给解析器会串味。
+本鱼实测 v2 在没戴紧箍咒时会自己写脚本自己跑，虽然好玩，但网关接不住。
+
+所以 Dockerfile 特意用 v1 安装脚本装 **OpenCode 1.x**，把契约锁死。
+你宿主机上的 v2 不受影响，容器里是另一个世界。想折腾 v2，去改
+`opencode_bridge/client.py` 的调用方式和 `parser.py`，别怪镜像。
+
+---
+
+## 🔌 客户端接入
 
 在 Cline / Roo Code / Dify / Cursor 等客户端里填：
 
@@ -250,7 +415,9 @@ uv run uvicorn opencode_bridge.server:app --host 127.0.0.1 --port 8083 --reload
 > 注意：OpenCode 的免费模型名字经常变（`opencode/gpt-5-nano`、`opencode/minimax-m2.5-free`
 > 这类老名字会失效）。以 `/v1/models` 返回的为准，一次只填一个。
 
-### 5. 用 curl 验证 Function Calling
+---
+
+## 🛠️ 用 curl 验证 Function Calling
 
 ```bash
 curl -X POST http://127.0.0.1:8083/v1/chat/completions \
@@ -293,10 +460,20 @@ curl -X POST http://127.0.0.1:8083/v1/chat/completions \
 **Q：`/v1/models` 返回的是兜底列表，不是我本机真实的模型？**
 说明 `opencode models` 跑失败了。先手动跑一遍看报错——常见的是权限问题，
 比如 macOS 上 `~/.local/share/opencode/log/` 不可写，给目录权限就好。
+容器里则是数据卷属主不对，`docker compose down -v` 重来通常能解决（但会清登录态）。
+
+**Q：Docker 里一调用就报 `Free usage limit reached`？**
+免费额度用完了，不是网关的锅。等一等、换个模型，或者
+`docker compose exec bridge opencode auth login` 登录自己的 provider。
+
+**Q：容器起来了，但 `/health` 一直 unhealthy？**
+先 `docker compose logs bridge` 看 Python 有没有起不来。常见原因：
+端口被宿主别的进程占了（改 `BRIDGE_HOST_PORT`），或者镜像构建时 OpenCode 没装成功
+（重新 `docker compose build --no-cache`）。
 
 **Q：请求一直转圈 / 500？**
-看网关终端里的 stderr。`OpenCodeError` 会把 CLI 的错误原样带出来；
-也可以先把 `OPENCODE_TIMEOUT` 设成 `120` 之类，免得一个卡死拖垮全部。
+看网关终端或 `docker compose logs` 里的 stderr。`OpenCodeError` 会把 CLI 的错误原样带出来；
+也可以把 `OPENCODE_TIMEOUT` 设成 `120` 之类，免得一个卡死拖垮全部。
 
 **Q：客户端说“不支持 tools”？**
 确认客户端走的是 `OpenAI Compatible`，并且网关确实收到了 `tools` 字段。
@@ -311,8 +488,13 @@ Prompt 是作为命令行参数传给 `opencode` 的，超过系统 `ARG_MAX` �
 重度 Agent 的几十万 token 上下文建议先裁剪，或者等本鱼哪天把 stdin 方案补上。
 
 **Q：安全吗？**
-默认只听 `127.0.0.1`，别手贱改成 `0.0.0.0` 还不设 `BRIDGE_API_KEY`，
-不然隔壁同事能拿你的免费额度跑一整天。设了 key 记得客户端也填一样。
+本地默认只听 `127.0.0.1`；Docker 默认也只把端口绑在宿主 `127.0.0.1`。
+别手贱改成 `0.0.0.0` 还不设 `BRIDGE_API_KEY`，不然隔壁同事能拿你的免费额度跑一整天。
+设了 key 记得客户端也填一样。
+
+**Q：镜像里为什么不带我宿主机的 opencode 登录？**
+容器有自己的 `HOME` 和数据卷，故意跟宿主隔离，免得把你本机的 session 写坏。
+登录一次，卷会记住，后面不用重复登。
 
 ---
 
@@ -328,7 +510,7 @@ uv run pytest -q
 
 ## 🐠 最后一句
 
-代码拆完了，README 也写了，依赖也装进 `.venv` 了。
-本鱼要去吃小鱼干了，剩下的你自己 `uv run` 一下试试——
+代码拆完了，README 也写了，依赖也装进 `.venv` 和 Docker 镜像了。
+本鱼要去吃小鱼干了，剩下的你自己 `uv run` 或 `docker compose up` 一下试试——
 
 *（要是跑不起来，回来找本鱼，别自己瞎改。……才不是关心你。）* 🫧

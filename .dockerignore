@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+.uv-cache
+.uv-python
+.tmp
+.tmp-home
+.stage
+.pytest_cache
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+.env
+.DS_Store

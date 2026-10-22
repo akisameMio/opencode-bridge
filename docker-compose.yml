@@ -1,0 +1,48 @@
+name: opencode-bridge
+
+services:
+  bridge:
+    build:
+      context: .
+      args:
+        # 留空 = 装 OpenCode 1.x 最新版；想锁版本就 export OPENCODE_VERSION=1.0.180
+        OPENCODE_VERSION: ${OPENCODE_VERSION:-}
+    image: opencode-bridge:local
+    container_name: opencode-bridge
+    init: true
+    restart: unless-stopped
+
+    # 只把端口绑在宿主 127.0.0.1 上：默认不给局域网开门。
+    # 想让别的机器用，把左边改成 0.0.0.0 或宿主 IP，并且一定设 BRIDGE_API_KEY。
+    ports:
+      - "127.0.0.1:${BRIDGE_HOST_PORT:-8083}:8083"
+
+    environment:
+      # 容器里必须听 0.0.0.0，不然端口映射进不来
+      BRIDGE_HOST: "0.0.0.0"
+      BRIDGE_PORT: "8083"
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-opencode/big-pickle}
+      # 留空 = 不鉴权；公开到局域网前务必设一个
+      BRIDGE_API_KEY: ${BRIDGE_API_KEY:-}
+      # 单次 opencode run 的超时（秒），0 = 不限时。容器里给个上限，免得卡死
+      OPENCODE_TIMEOUT: ${OPENCODE_TIMEOUT:-300}
+      BRIDGE_WORK_DIR: /home/bridge/workspace
+
+    volumes:
+      # opencode 的 auth / session / 数据库，登录一次就一直有效
+      - opencode-data:/home/bridge/.local/share/opencode
+      # opencode 的配置（service.json 之类）
+      - opencode-config:/home/bridge/.config/opencode
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8083/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    stop_grace_period: 10s
+
+volumes:
+  opencode-data:
+  opencode-config:
